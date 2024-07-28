@@ -1,16 +1,12 @@
-::: {.container-fluid .main-container}
-::: {#header .fluid-row}
-# Exploring the BRFSS data {#exploring-the-brfss-data .title .toc-ignore}
-:::
-
-::: {#setup .section .level2}
-## Setup
-
-::: {#load-packages .section .level3}
-### Load packages
-
-::: {#cb1 .sourceCode}
-``` {.sourceCode .r}
+---
+title: Exploring the BRFSS data
+author: Heiner Atze
+abstract: Final project for the first course in the *Statistics with R* specialization offered by Duke university on Coursera.
+date: 2020-04-02 
+---
+# Setup
+## Load packages
+```{.sourceCode .r}
 library(ggplot2)
 library(dplyr)
 library(plyr)
@@ -19,26 +15,18 @@ library(gridExtra)
 library(knitr)
 library(reshape2)
 ```
-:::
-:::
 
-::: {#load-data .section .level3}
-### Load data
+## Load data
 
-::: {#cb2 .sourceCode}
 ``` {.sourceCode .r}
 load("brfss2013.RData")
 ```
-:::
 
 ------------------------------------------------------------------------
-:::
-:::
 
-::: {#part-1-data .section .level2}
-## Part 1: Data
-
-**Short Introduction** The [Behavioral Risk Factor Surveillance System
+# Data
+## Introduction
+The [Behavioral Risk Factor Surveillance System
 (BRFSS)](https://www.cdc.gov/brfss/index.html) is a US nationwide survey
 regarding health-related risk behaviors, chronic health conditions, and
 use of preventive services which is conducted annually since 1984. The
@@ -71,19 +59,13 @@ people that can be reached by phone. Parts of the population that do not
 have (or want) acces to a phone or are less likely to answer (low
 income, illegal immigrants, children) might be missed during sampling.
 
-::: figure
+
 ![Lecture Slides - Week 1, Random Sample
 Assignment](images/7b1d87b3a2380854a20009f390c9d830252bea9a.png)
 
-[Lecture Slides - Week 1, Random Sample
-Assignment](https://d3c33hcgiwev3.cloudfront.net/_c4665864796f7d7627b1374284f5ddd0_u1_p1_sp_random_sample_assignment.pdf?Expires=1585612800&Signature=RWQZRuluysxuOXSk2lyZjsAbGvaPBDFUSWNfCfldp0AoWlGosq-RRS4pd6jFj8hUowqrycA9qk-xRt2A7jSTODRW0S3Bhh5WejlkrmRqBPCQXhM5-0aDl056uxeu1w4Ui-VlLH1ZAjH-XkKHCX7d7ypOP8bjfaH5ygg~pzrA38M_&Key-Pair-Id=APKAJLTNE6QMUY6HBC5A)
-:::
-
 ------------------------------------------------------------------------
-:::
 
-::: {#part-2-research-questions .section .level2}
-## Part 2: Research questions
+# Formulating research questions
 
 **Research quesion 1:** Is there an association between gender and
 income level?
@@ -96,16 +78,11 @@ level and general health status?
 health status?
 
 ------------------------------------------------------------------------
-:::
 
-::: {#part-3-exploratory-data-analysis .section .level2}
-## Part 3: Exploratory data analysis
+# Exploratory data analysis for variables associated with the research questions
 
-**General EDA for variables associated with the research questions**
+## Visual EDA
 
-***Plot***
-
-::: {#cb3 .sourceCode}
 ``` {.sourceCode .r}
 #plots for each variable
 eda_p1 <- 
@@ -144,13 +121,12 @@ grid.arrange(
   nrow = 2
 ) 
 ```
-:::
 
-![](images/b4a3e80f5bc46576560cf332cd3fcb6acb0c9631.png){width="960"}
+![](images/b4a3e80f5bc46576560cf332cd3fcb6acb0c9631.png){.preview-image #fig-eda width=100%}
 All distributions of variables that will be used in the subsequent
 analysis are skewed.
 
-***Summary statistics***
+## Summary statistics
 
 **Note on chosen summary statistics** As all variables used to address
 the research questions are categorical, summary statistics will be
@@ -158,9 +134,8 @@ counts and proportions calculated for each variable.
 
 ------------------------------------------------------------------------
 
-**Gender**
+### **Gender**
 
-::: {#cb4 .sourceCode}
 ``` {.sourceCode .r}
 kable(
   data.frame(
@@ -174,7 +149,6 @@ kable(
   table.attr = "class=\"table table-condensed\" width=50%"
   )
 ```
-:::
 
   Sex         count      \%
   -------- -------- -------
@@ -189,9 +163,8 @@ participants.
 
 ------------------------------------------------------------------------
 
-**Income Level**
+### **Income Level**
 
-::: {#cb5 .sourceCode}
 ``` {.sourceCode .r}
 kable(
   na.omit(
@@ -203,7 +176,6 @@ kable(
   table.attr = "class=\"table table-condensed\" width=50%"
 )
 ```
-:::
 
   Income                  count      \%
   -------------------- -------- -------
@@ -222,9 +194,8 @@ together.
 
 ------------------------------------------------------------------------
 
-**Health Status**
+### **Health Status**
 
-::: {#cb6 .sourceCode}
 ``` {.sourceCode .r}
 kable(
  na.omit(
@@ -236,7 +207,6 @@ kable(
   table.attr = "class=\"table table-condensed\" width=50%"
 )
 ```
-:::
 
   Gen. Health      count      \%
   ------------- -------- -------
@@ -251,9 +221,8 @@ Pariticipants with Good or Very Good general health status make up over
 
 ------------------------------------------------------------------------
 
-**Ethnicity**
+### **Ethnicity**
 
-::: {#cb7 .sourceCode}
 ``` {.sourceCode .r}
 kable(
   na.omit(brfss2013[,c('sex','X_mrace1')]) %>% 
@@ -266,7 +235,6 @@ kable(
   table.attr = "class=\"table table-condensed\" width=50%"
 )
 ```
-:::
 
   Ethnicity                      count      \%
   --------------------------- -------- -------
@@ -310,9 +278,10 @@ more thorough analysis.
 
 ------------------------------------------------------------------------
 
-**Research question 1**
+# Exploring research questions
 
-**Is there an association between gender and income level?**\_
+## **Is there an association between gender and income level?**
+### Intro and objective
 
 **Why would this be an interesting question?**
 
@@ -323,7 +292,6 @@ and income level is of particular interest.
 
 ***Table - Difference (%) between genders in income levels***
 
-::: {#cb8 .sourceCode}
 ``` {.sourceCode .r}
 #extract income and sex variables
 inc_gender <-
@@ -348,7 +316,6 @@ diff = t(diff)
 colnames(diff) <- c("<$10k", "<$15k", "<$20k", "<$25k", "<$35k", "<$50k", "<$75k", ">$75k")
 kable(round(diff,2),format = 'markdown')
 ```
-:::
 
                      \<\$10k   \<\$15k   \<\$20k   \<\$25k   \<\$35k   \<\$50k   \<\$75k   \>\$75k
   ---------------- --------- --------- --------- --------- --------- --------- --------- ---------
@@ -361,7 +328,6 @@ decreases with increasing income and is actually inversed for incomes
 greater than \$50,000 (positive value indicates more men than women).
 For addtiional interpretation see below.
 
-::: {#cb9 .sourceCode}
 ``` {.sourceCode .r}
 #general plot layout
 p_p <- 
@@ -377,9 +343,11 @@ p_p +
   ylab("Percentage") +
   theme(axis.text.x = element_text(angle = 45, hjust=1))
 ```
-:::
 
 ![](images/f4920a586eef74cc95d2062750b02ea9980776dc.png){width="960"}
+
+### Interpretation and conclusions
+
 **Interpretation** The plot shows the percentage of participants in each
 income group, conditioned by gender. Women seem to be overrepresented in
 income groups \<35,000\$. A striking difference is found in the highest
@@ -408,10 +376,9 @@ relationship of these variables further research is needed.
 
 ------------------------------------------------------------------------
 
-**Research question 2**
+## **Is there an association between gender, income level and general health status?**
 
-**Is there an association between gender, income level and general
-health status?**
+### Intro and objective
 
 **Why would this be an interesting question?**
 
@@ -420,7 +387,6 @@ associations between gender, income and general health.
 
 ***Plot 1***
 
-::: {#cb10 .sourceCode}
 ``` {.sourceCode .r}
 #extract income, sex and genhlth variables
 inc_health_gender <-
@@ -448,9 +414,10 @@ p_p <-
 
 p_p
 ```
-:::
 
 ![](images/e7354d4148dde6c6b075a168fc28f381d3a18dae.png){width="960"}
+
+### Interpretation and conclusions
 
 **Interpretation** A first analysis of the gender health status
 distributions, reveals equal proportions between men and women for the
@@ -468,7 +435,6 @@ this survey, sampling more subjects could possibly include more subjects
 with less likely attributes. For this reason, there might be more women
 with lower general health status in the survey than men.
 
-::: {#cb11 .sourceCode}
 ``` {.sourceCode .r}
 #calculate proportions of health status in income levels conditioned by gender
 perc_2 = inc_health_gender %>%
@@ -491,7 +457,6 @@ p_p2 +
   theme(axis.text.x = element_text(angle = 45, hjust=1)) +
   scale_fill_discrete(name='Health status')
 ```
-:::
 
 ![](images/c08a83a24e152288804a5b5823f6ad46282dbd57.png){width="960"}
 
@@ -516,10 +481,9 @@ seems to be different for men and women.
 
 ------------------------------------------------------------------------
 
-**Research question 3:**
+## **Is there and association between race (White, Black or African American, Asian), income level and general health status?**
 
-**Is there and association between race (White, Black or African
-American, Asian), income level and general health status?**
+### Intro and objective
 
 **Why would this be an interesting question?**
 
@@ -529,7 +493,6 @@ Race has been described to possbily have an impact on
 
 ***Plot***
 
-::: {#cb12 .sourceCode}
 ``` {.sourceCode .r}
 #extract income and sex variables, filter for specific races
 inc_health_eth <-
@@ -564,9 +527,11 @@ p_p3 +
   scale_fill_discrete(name='Health status') +
   geom_hline(yintercept = c(25,50,75), linetype="dashed", alpha=0.5)
 ```
-:::
 
 ![](images/89a16bc308564fbe0083ef601e49b96439122ec7.png){width="960"}
+
+### Interpretation and conclusions
+
 **Interpretation** The overall trend of general health status is the
 same across income classes when conditioned for ethnicity: Higher
 income - better overall health. Two interesting observations can be
@@ -585,5 +550,4 @@ within this sample. As we have seen for gender, race may influence the
 impact of income level on general health status.
 
 **Reminder on generalizability of the findings** Same as for question 1
-:::
-:::
+

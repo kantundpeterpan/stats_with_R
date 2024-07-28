@@ -1,0 +1,1634 @@
+---
+title: Modeling and prediction of movie scores
+author: Heiner Atze
+date: 2020-05-15
+categories: [r, modeling, data prep, viz]
+---
+
+# Setup
+
+## Load packages
+
+``` {.sourceCode .r}
+library(ggplot2)
+library(dplyr)
+library(statsr)
+library(knitr)
+library(broom)
+library(leaps)
+library(caret)
+library(olsrr)
+library(sjPlot)
+```
+
+## Load data
+
+``` {.sourceCode .r}
+load("movies.Rdata")
+movies = as.data.frame(movies)
+```
+
+------------------------------------------------------------------------
+
+# Data
+
+The dataset contains data on 651 randomly chosen movies produced and
+release before 2016. These are observational data, therefore no
+causality can be inferred from an analysis. As a random sample was
+obtained, the findings can be generalized to the population at large.
+
+As there is no information as to from where the data was collected it is
+difficult to comment on possible biases in the dataset. If the data was
+gathered exclusively from IMDB and Rotten Tomatoes, one could imagine
+that the data is biased to somewhat famous movies as smaller or less
+known productions might not have been listed and/or rated on these
+websites.
+
+------------------------------------------------------------------------
+
+# Research question
+
+What are significant predictors for movie popularity?
+
+------------------------------------------------------------------------
+
+# Exploratory data analysis
+
+## Some functions
+
+``` {.sourceCode .r}
+#Check whether an actor is in among the main 5 actors
+get_actor <- function(r, actor){
+  actor_cols = c('actor1', 'actor2', 'actor3', 'actor4', 'actor5')
+  s = as.data.frame(t(r), col.names = names(r), stringsAsFactors=FALSE)
+  if (actor %in% stack(s, actor_cols)$values){
+    return('yes')
+  } else {
+    return('no')
+  }
+}
+```
+
+``` {.sourceCode .r}
+get_director <- function(r){
+  s = as.data.frame(t(r), col.names = names(r), stringsAsFactors=FALSE)
+  if (s['director'] %in% directors) {
+    return(s['director'])
+  } else {
+    return('other')
+  }
+}
+
+get_studio <- function(r){
+  s = as.data.frame(t(r), col.names = names(r), stringsAsFactors=FALSE)
+  if (s['studio'] %in% studios) {
+    return(s['studio'])
+  } else {
+    return('other')
+  }
+}
+```
+
+## Choice of target variable
+
+The dataset contains numeric variables that are highly correlated with
+each other, as can be seen from the pairplot and the corresponding
+correlation matrix.
+
+``` {.sourceCode .r}
+pairs(movies[,c('audience_score', 'critics_score', 'imdb_rating')])
+```
+
+![](images/37401b17e96a6d47472439ac2b18d8c0967a63d2.png){width=100%}
+
+``` {.sourceCode .r}
+tidy(cor(movies[,c('audience_score', 'critics_score', 'imdb_rating')]))
+```
+
+    ## Warning: 'tidy.matrix' is deprecated.
+    ## See help("Deprecated")
+
+    ## # A tibble: 3 x 4
+    ##   .rownames      audience_score critics_score imdb_rating
+    ##   <chr>                   <dbl>         <dbl>       <dbl>
+    ## 1 audience_score          1             0.704       0.865
+    ## 2 critics_score           0.704         1           0.765
+    ## 3 imdb_rating             0.865         0.765       1
+
+We can learn from this plot that (maybe or maybe not surprisingly)
+critics and audience tend to agree in their ratings, as well as that
+there is a high correlation between the two measures from Rotten
+Tomatoes and the IMDB-rating. Information on how the scores are obtained
+can be found on the websites of [Rotten
+Tomatoes](https://www.rottentomatoes.com/about) and
+[IMDB](https://help.imdb.com/article/imdb/track-movies-tv/ratings-faq/G67Y87TFYYP6TWAV?ref_=helpsect_cons_2_4#calculate),
+respectively. Essentially, IMDB ratings and Audience Scores from Rotten
+Tomatoes are measuring the same thing - whether the movies was liked by
+the people who have seen it. So the high correlation is not surprising
+and there might as well be redundancy concerning the information in
+these two variables.
+
+For this project I will choose `audience_score` as the response variable
+and drop `critics_score` and `imdb_rating` due to their high
+collinearity *and* redundant information.
+
+## Actors
+
+In order to explore associations between the audience score and actors,
+we need to do some data manipulation. The columns containing the names
+of the five main actors are stacked, missing values are removed and
+finally appearances per actor are counted and stored.
+
+``` {.sourceCode .r}
+actor_cols = c('actor1', 'actor2', 'actor3', 'actor4', 'actor5')
+
+#count appearances of actors over the whole dataset
+df = stack(movies[,actor_cols]) %>%
+  na.omit() %>% 
+  group_by(values) %>% 
+  count()
+
+#get actors that appear in 5 or more movies
+actors = df[df$n>=5,]$values
+
+actors
+```
+
+    ##  [1] "Al Pacino"         "Alan Alda"         "Andy Garcia"      
+    ##  [4] "Ben Affleck"       "Charlize Theron"   "Christian Bale"   
+    ##  [7] "Colin Firth"       "Dan Aykroyd"       "Danny Glover"     
+    ## [10] "Dennis Quaid"      "Diane Keaton"      "Eddie Murphy"     
+    ## [13] "Gene Hackman"      "Helen Hunt"        "Jamie Foxx"       
+    ## [16] "Jeremy Northam"    "John Cusack"       "John Hurt"        
+    ## [19] "John Travolta"     "Juliette Lewis"    "Keanu Reeves"     
+    ## [22] "Mel Gibson"        "Michael Caine"     "Minnie Driver"    
+    ## [25] "Naomi Watts"       "Nick Nolte"        "Nicolas Cage"     
+    ## [28] "Richard Gere"      "Robert De Niro"    "Samuel L. Jackson"
+    ## [31] "Sean Penn"         "Steve Martin"      "Steve Zahn"       
+    ## [34] "Tom Cruise"        "Tommy Lee Jones"   "Val Kilmer"       
+    ## [37] "Woody Harrelson"
+
+There are 37 actors that appear in 5 or more movies within this dataset.
+For visualisation we will extract, the mean and the standard deviation
+of `audience_score` for each of these actors.
+
+``` {.sourceCode .r}
+eda_actors = data.frame()
+colnames <- c('min', 'mean', 'max', 'n', 'sd','se')
+
+#get summary statisics for actors with 5 or more appearances
+for (a in actors) {
+  temp <- movies %>% 
+    na.omit() %>% 
+    group_by(as.factor(apply(na.omit(movies), 1, get_actor, actor=a))) %>% 
+    summarise(min=min(audience_score),
+            mean=mean(audience_score),
+            max=max(audience_score),
+            n=n(),
+            sd = sd(audience_score),
+            se=sd(audience_score)/n())
+  colnames(temp) <- c('isin', 'min', 'mean', 'max', 'n', 'sd','se')
+  eda_actors <- rbind(eda_actors, as.data.frame(temp[temp$isin == 'yes',c('min', 'mean', 'max', 'n', 'sd','se')]))
+}
+rownames(eda_actors) <- actors
+eda_actors['actor'] = actors
+```
+
+``` {.sourceCode .r}
+ggplot(eda_actors[1:10,], aes(x=actor, y=mean, fill=actor, color=actor)) + 
+  geom_point(size=5) + 
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd)) + 
+  geom_hline(yintercept = mean(movies$audience_score),
+             linetype='dashed',
+             show.legend = TRUE) +
+  theme(axis.text.x = element_text(color='white')) + 
+  ylab('audience score') +
+  xlab('')
+```
+
+![](images/c5e6342a82c9f05dcb1db4d4c173c74aa2f11698.png){width=100%}
+
+The plot above shows the $mean \pm SD$ of `audience_score`
+conditioned on the first 10 actors with 5 or more appearances, the
+dashed line indicates the mean of `audience_score` over all movies. For
+most of the actors, the movies they appear in have a rather large spread
+of audience score. Only the movies Christian Bale plays in have a
+consistent high rating different from the overall mean, which could
+prove useful for modeling.
+
+## Directors
+
+The same analysis can be conducted for directors that appear four or
+more time in the dataset.
+
+``` {.sourceCode .r}
+reg = movies %>%
+  group_by(director) %>%
+  na.omit() %>%
+  count()
+
+directors = reg[reg$n>=4,]$director
+directors
+```
+
+    ## [1] "James Ivory"     "Martin Scorsese" "Oliver Stone"    "Renny Harlin"   
+    ## [5] "Woody Allen"
+
+``` {.sourceCode .r}
+#refactoring the director variable
+movies$director = as.factor(unlist(apply(movies, 1, get_director)))
+
+eda_dir <- movies %>% 
+  group_by(director) %>%
+  summarise(min=min(audience_score),
+            mean=mean(audience_score),
+            max=max(audience_score),
+            n=n(),
+            sd = sd(audience_score),
+            se=sd(audience_score)/n())
+```
+
+``` {.sourceCode .r}
+dir_p = eda_dir[eda_dir$director != 'other',] %>%
+  ggplot(aes(x=director, y=mean, color = director, fill=director)) + 
+  geom_point(size=5, shape=23, fill='white') + 
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd)) + 
+  geom_hline(yintercept = mean(movies$audience_score),
+             linetype='dashed',
+             show.legend = TRUE) +
+  theme(axis.text.x = element_text(color='white')) + 
+  ylab('audience score') +
+  xlab('')
+dir_p + geom_jitter(aes(director, audience_score), data = movies[movies$director!='other',],
+                    position = position_jitter(0), color='black', show.legend = FALSE)
+```
+
+![](images/776895b6282daa1e13962531136934f931daa7f0.png){width=100%}
+
+Data are $mean \pm SD$ with individual films indicated as black
+dots. As above the dashed line indicates the overall mean. From the five
+directors with 4 or more movies in the dataset, only Woody Allen's
+movies have a consistently high score.
+
+## Studios
+
+``` {.sourceCode .r}
+stu = movies %>%
+  group_by(studio) %>%
+  na.omit() %>%
+  count()
+```
+
+    ## Warning: Factor `studio` contains implicit NA, consider using
+    ## `forcats::fct_explicit_na`
+
+``` {.sourceCode .r}
+studios = stu[stu$n >= 10,]$studio
+studios
+```
+
+    ##  [1] 20th Century Fox                        
+    ##  [2] IFC Films                               
+    ##  [3] MCA Universal Home Video                
+    ##  [4] MGM                                     
+    ##  [5] Miramax Films                           
+    ##  [6] New Line Cinema                         
+    ##  [7] Paramount Home Video                    
+    ##  [8] Paramount Pictures                      
+    ##  [9] Sony Pictures                           
+    ## [10] Sony Pictures Home Entertainment        
+    ## [11] Twentieth Century Fox Home Entertainment
+    ## [12] Universal Pictures                      
+    ## [13] Warner Bros. Pictures                   
+    ## [14] Warner Home Video                       
+    ## 211 Levels: 20th Century Fox ... Zeitgeist Films
+
+``` {.sourceCode .r}
+#refactor the studio variable
+movies$studio = as.factor(unlist(apply(movies, 1, get_studio)))
+
+eda_studio <- movies %>% 
+  group_by(studio) %>%
+  summarise(min=min(audience_score),
+            mean=mean(audience_score),
+            max=max(audience_score),
+            n=n(),
+            sd = sd(audience_score),
+            se=sd(audience_score)/n())
+```
+
+``` {.sourceCode .r}
+ggplot() + 
+  geom_jitter(aes(x=studio, y = audience_score),
+              data = movies[movies$studio!='other',],
+              position = position_jitter(0.1)) + 
+  stat_summary(aes(x=studio, y = audience_score, color=studio), data = movies[movies$studio!='other',], 
+               fun=mean, geom='point', shape=23, size=5, fill='white') + 
+  geom_errorbar(aes(x=studio, ymin = mean-sd, ymax=mean+sd, color=studio),
+                data = eda_studio[eda_studio$studio!='other',]) + 
+  geom_hline(yintercept = mean(movies$audience_score),
+             linetype='dashed',
+             show.legend = TRUE) +
+  theme(axis.text.x = element_text(color='white')) + 
+  ylab('audience score') +
+  xlab('')
+```
+
+![](images/0a59cc5613ea47626b60024f7f67db56981d0211.png){width="768"}
+
+Data are $mean \pm SD$ with individual films indicated as black
+dots. When conditioned on the studio, there seem to be quite some
+differences in `audience_score`. Most of these major studios have a mean
+audience rating below the overall average.
+
+## Genre
+
+``` {.sourceCode .r}
+movies %>%
+  na.omit %>%
+  group_by(genre) %>%
+  ggplot(aes(genre, audience_score, fill=genre)) +
+  geom_violin() +
+  stat_summary(fun=mean, shape=23, size=2, fill='white') + 
+  geom_hline(yintercept = mean(movies$audience_score),
+             linetype='dashed',
+             show.legend = TRUE) +
+  theme(axis.text.x = element_text(color='white')) + 
+  ylab('audience score') +
+  xlab('')
+```
+
+    ## Warning: Removed 11 rows containing missing values (geom_segment).
+
+![](images/bb628cdd68f14da249dffca30c9b84a0fd77af4e.png){width=100%}
+
+This distribution plot reveals that Documentaries and Muscial movies
+have scores above the overall average, while the inverse is the case for
+Horror movies.
+
+------------------------------------------------------------------------
+
+# Modeling
+
+## Variable encoding
+
+I will use
+[*One-Hot-Encoding*](https://hackernoon.com/what-is-one-hot-encoding-why-and-when-do-you-have-to-use-it-e3c6186d008f)
+for the categorical variables that will be included in the model. This
+allows to easily remove certain factor levels without releveling.
+
+### Actors
+
+``` {.sourceCode .r}
+for (a in actors) {
+  movies[gsub(' ', '.', a)] = as.factor(apply(movies, 1, get_actor, actor = a))
+}
+```
+
+``` {.sourceCode .r}
+movies_red = movies[append(gsub(' ', '.', actors), c('director',
+                                                     'runtime',
+                                                     'genre',
+                                                     'studio',
+                                                     'best_dir_win',
+                                                     'best_actor_win',
+                                                     'best_actress_win',
+                                                     'audience_score'))] %>% 
+  na.omit() #reduced dataset with all variables for the full model
+
+movies_red <- within(movies_red,
+                     director <- relevel(director, ref='other'))
+
+movies_red <- within(movies_red,
+                     studio <- relevel(studio, ref='other'))
+```
+
+### Directors and Studios
+
+``` {.sourceCode .r}
+dmy <- dummyVars("~.", data = data.frame(director = movies_red$director,
+                                         studio = movies_red$studio,
+                                         genre = movies_red$genre))
+dir_dummy <- data.frame(predict(dmy,
+                                newdata = data.frame(director = movies_red$director,
+                                                     studio = movies_red$studio,
+                                                     genre = movies_red$genre))) %>% 
+  lapply(as.factor) %>% 
+  as.data.frame()
+
+movies_red = data.frame(
+  append(
+    select(
+      movies_red, -c('director', 'studio', 'genre') #dropping the original columns
+      ), 
+      select(
+        dir_dummy, -c('director.other', 'studio.other', 'genre.Other') #drop the reference levels of studio and director
+             )
+    )
+)
+```
+
+## Full model
+
+``` {.sourceCode .r}
+md = lm(audience_score ~ ., data = movies_red)
+smd = summary(md)
+#print(smd, digits=1)
+tab_model(md, p.style = 'asterisk')
+```
+
+<details>
+  <summary>Table: Full Model coefficients, confidence intervals and p-values</summary>
+<table style="border-collapse: collapse; border: medium; --darkreader-inline-border-top: currentcolor; --darkreader-inline-border-right: currentcolor; --darkreader-inline-border-bottom: currentcolor; --darkreader-inline-border-left: currentcolor;" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="">
+<tbody><tr>
+<th style="border-top: double; font-style: normal; font-weight: bold; padding: 0.2cm; text-align: left; --darkreader-inline-border-top: currentcolor;" data-darkreader-inline-border-top="">
+&nbsp;
+</th>
+<th colspan="2" style="border-top: double; text-align: center; font-style: normal; font-weight: bold; padding: 0.2cm; --darkreader-inline-border-top: currentcolor;" data-darkreader-inline-border-top="">
+audience_score
+</th>
+</tr>
+<tr>
+<td style="border-bottom: 1px solid; font-style: italic; font-weight: normal; text-align: left; --darkreader-inline-border-bottom: currentcolor;" data-darkreader-inline-border-bottom="">
+Predictors
+</td>
+<td style="text-align: center; border-bottom: 1px solid; font-style: italic; font-weight: normal; --darkreader-inline-border-bottom: currentcolor;" data-darkreader-inline-border-bottom="">
+Estimates
+</td>
+<td style="text-align: center; border-bottom: 1px solid; font-style: italic; font-weight: normal; --darkreader-inline-border-bottom: currentcolor;" data-darkreader-inline-border-bottom="">
+CI
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+(Intercept)
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+47.14 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+34.36&nbsp;–&nbsp;59.92
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Al.Pacino [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-2.70 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-18.37&nbsp;–&nbsp;12.98
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Alan.Alda [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-22.24 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-39.36&nbsp;–&nbsp;-5.12
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Andy.Garcia [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.87 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-19.84&nbsp;–&nbsp;12.10
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Ben.Affleck [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-18.90 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-35.43&nbsp;–&nbsp;-2.36
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Charlize.Theron [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.62 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-29.35&nbsp;–&nbsp;4.11
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Christian.Bale [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+11.41 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-5.52&nbsp;–&nbsp;28.34
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Colin.Firth [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-4.21 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-21.16&nbsp;–&nbsp;12.75
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Dan.Aykroyd [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.80 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-19.22&nbsp;–&nbsp;11.63
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Danny.Glover [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.45 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-15.62&nbsp;–&nbsp;18.53
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Dennis.Quaid [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-8.03 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-24.12&nbsp;–&nbsp;8.05
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Diane.Keaton [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-0.70 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-16.88&nbsp;–&nbsp;15.47
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Eddie.Murphy [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-6.10 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-22.53&nbsp;–&nbsp;10.32
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Gene.Hackman [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+5.71 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-10.14&nbsp;–&nbsp;21.55
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Helen.Hunt [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-2.74 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-17.62&nbsp;–&nbsp;12.14
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Jamie.Foxx [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-4.38 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-19.01&nbsp;–&nbsp;10.26
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Jeremy.Northam [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.62 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-20.93&nbsp;–&nbsp;13.69
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+John.Cusack [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+8.69 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-6.29&nbsp;–&nbsp;23.67
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+John.Hurt [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-0.34 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-14.89&nbsp;–&nbsp;14.21
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+John.Travolta [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-2.27 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-16.35&nbsp;–&nbsp;11.81
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Juliette.Lewis [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.40 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-18.11&nbsp;–&nbsp;15.31
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Keanu.Reeves [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+14.43 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-0.65&nbsp;–&nbsp;29.51
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Mel.Gibson [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+12.99 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.43&nbsp;–&nbsp;29.41
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Michael.Caine [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+16.00 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-0.91&nbsp;–&nbsp;32.91
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Minnie.Driver [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+17.42 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.38&nbsp;–&nbsp;34.46
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Naomi.Watts [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.02 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-20.66&nbsp;–&nbsp;14.61
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Nick.Nolte [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-7.15 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-21.76&nbsp;–&nbsp;7.45
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Nicolas.Cage [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-15.12 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-30.10&nbsp;–&nbsp;-0.14
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Richard.Gere [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-15.77 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-28.81&nbsp;–&nbsp;-2.73
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Robert.De.Niro [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-7.27 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-26.57&nbsp;–&nbsp;12.03
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Samuel.L..Jackson [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+11.84 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.51&nbsp;–&nbsp;25.18
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Sean.Penn [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.06 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-19.08&nbsp;–&nbsp;19.20
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Steve.Martin [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+7.11 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-9.56&nbsp;–&nbsp;23.78
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Steve.Zahn [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.36 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-18.15&nbsp;–&nbsp;15.43
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Tom.Cruise [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+3.52 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-13.77&nbsp;–&nbsp;20.80
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Tommy.Lee.Jones [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-9.80 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-26.86&nbsp;–&nbsp;7.25
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Val.Kilmer [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+13.49 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.82&nbsp;–&nbsp;28.80
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Woody.Harrelson [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.73 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-16.93&nbsp;–&nbsp;13.48
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+runtime
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.16 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.08&nbsp;–&nbsp;0.25
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+best_dir_win [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+2.61 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-4.44&nbsp;–&nbsp;9.66
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+best_actor_win [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-0.46 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-5.93&nbsp;–&nbsp;5.01
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+best_actress_win [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.26 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-4.27&nbsp;–&nbsp;6.80
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+director.James.Ivory [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-14.45 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-32.88&nbsp;–&nbsp;3.98
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+director.Martin.Scorsese<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+4.94 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-17.04&nbsp;–&nbsp;26.93
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+director.Oliver.Stone [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+3.72 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-17.14&nbsp;–&nbsp;24.58
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+director.Renny.Harlin [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-9.06 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-27.02&nbsp;–&nbsp;8.90
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+director.Woody.Allen [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+26.49 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+6.11&nbsp;–&nbsp;46.86
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.20th.Century.Fox<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.92 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.79&nbsp;–&nbsp;4.95
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.IFC.Films [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-2.05 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.02&nbsp;–&nbsp;7.92
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.MCA.Universal.Home.Video<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+2.52 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-8.04&nbsp;–&nbsp;13.08
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.MGM [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-13.60 <sup>**</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-22.74&nbsp;–&nbsp;-4.46
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Miramax.Films [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+3.48 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-6.20&nbsp;–&nbsp;13.16
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.New.Line.Cinema<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.76 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-24.33&nbsp;–&nbsp;-1.18
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Paramount.Home.Video<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.71 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-23.49&nbsp;–&nbsp;-1.94
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Paramount.Pictures<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+2.88 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.83&nbsp;–&nbsp;9.59
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Sony.Pictures [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.74 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-13.65&nbsp;–&nbsp;10.18
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Sony.Pictures.Home.Entertainment<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-6.71 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-14.18&nbsp;–&nbsp;0.75
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Twentieth.Century.Fox.Home.Entertainment<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-2.63 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.51&nbsp;–&nbsp;7.25
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Universal.Pictures<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+9.52 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.43&nbsp;–&nbsp;17.62
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Warner.Bros..Pictures<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-1.55 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-8.72&nbsp;–&nbsp;5.62
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Warner.Home.Video<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-3.12 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.02&nbsp;–&nbsp;5.78
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Action…Adventure<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-9.71 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-20.01&nbsp;–&nbsp;0.59
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Animation [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+2.57 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.62&nbsp;–&nbsp;17.75
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Art.House…International<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.98 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-12.31&nbsp;–&nbsp;14.27
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Comedy [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-11.15 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-21.37&nbsp;–&nbsp;-0.92
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Documentary [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+20.07 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+9.54&nbsp;–&nbsp;30.60
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Drama [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.43 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-8.03&nbsp;–&nbsp;10.88
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Horror [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-13.46 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-25.43&nbsp;–&nbsp;-1.49
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Musical…Performing.Arts<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+16.12 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+2.44&nbsp;–&nbsp;29.80
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Mystery…Suspense<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-9.02 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-19.58&nbsp;–&nbsp;1.53
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Science.Fiction…Fantasy<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-13.33 <sup></sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-28.35&nbsp;–&nbsp;1.69
+</td>
+</tr>
+<tr>
+<td style="padding: 0.1cm 0.2cm; vertical-align: top; text-align: left; border-top: 1px solid; --darkreader-inline-border-top: currentcolor;" data-darkreader-inline-border-top="">
+Observations
+</td>
+<td style="padding: 0.1cm 0.2cm; vertical-align: top; text-align: left; border-top: 1px solid; --darkreader-inline-border-top: currentcolor;" colspan="2" data-darkreader-inline-border-top="">
+650
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; padding-top:0.1cm; padding-bottom:0.1cm;">
+R<sup>2</sup> / R<sup>2</sup> adjusted
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; padding-top:0.1cm; padding-bottom:0.1cm; text-align:left;" colspan="2">
+0.324 / 0.242
+</td>
+</tr>
+<tr>
+<td colspan="3" style="font-style: italic; border-top: double black; text-align: right; --darkreader-inline-border-top: #867b6b;" data-darkreader-inline-border-top="">
+<ul>
+<li>p&lt;0.05&nbsp;&nbsp;&nbsp;** p&lt;0.01&nbsp;&nbsp;&nbsp;*** p&lt;0.001
+</li></ul></td>
+</tr>
+
+</tbody></table>
+</details>
+
+The full model has an $\text{adjusted }R^2$ of 0.245 and accounts for
+32.3% of the variance in the data ($R^2$ = 0.323). The majority of
+the variables has a small impact on the response and/or is not
+statiscally significant, so we should be able to remove some (a lot) of
+the predictors without the model getting worse.
+
+## Reduced model: variable selection based on p-values
+
+As I am rather interested in significant and important predictors for
+`audience_score`, model selection will be based on *p-values*. Given the
+large number of variables, the `ols_step_both_p` function from the
+[`olsrr`
+package](https://olsrr.rsquaredacademy.com/articles/variable_selection.html#stepwise-regression)
+will be used. This function performs both forward and backward selection
+and finally returns a model containing only statistically significant
+predictors.
+
+``` {.sourceCode .r}
+pm = ols_step_both_p(md, prem=0.05)
+```
+
+``` {.sourceCode .r}
+par(mfrow=c(1,3))
+plot(pm$model, which=c(1,2), add.smooth=FALSE)
+hist(pm$model$residuals)
+```
+
+![](images/316f8987ffb988c3cb79b02db7145b04791ef277.png){width="960"}
+
+At a brief look at the final model diagnostics plots, there is no
+visible pattern in the residuals. They are distributed somewhat normally
+around zero with a slight left skew. All conditions seem to be
+satisfied.
+
+``` {.sourceCode .r}
+tab_model(pm$model, p.style = 'asterisk')
+```
+<table style="border-collapse: collapse; border: medium; --darkreader-inline-border-top: currentcolor; --darkreader-inline-border-right: currentcolor; --darkreader-inline-border-bottom: currentcolor; --darkreader-inline-border-left: currentcolor;" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="">
+<tbody><tr>
+<th style="border-top: double; font-style: normal; font-weight: bold; padding: 0.2cm; text-align: left; --darkreader-inline-border-top: currentcolor;" data-darkreader-inline-border-top="">
+&nbsp;
+</th>
+<th colspan="2" style="border-top: double; text-align: center; font-style: normal; font-weight: bold; padding: 0.2cm; --darkreader-inline-border-top: currentcolor;" data-darkreader-inline-border-top="">
+audience_score
+</th>
+</tr>
+<tr>
+<td style="border-bottom: 1px solid; font-style: italic; font-weight: normal; text-align: left; --darkreader-inline-border-bottom: currentcolor;" data-darkreader-inline-border-bottom="">
+Predictors
+</td>
+<td style="text-align: center; border-bottom: 1px solid; font-style: italic; font-weight: normal; --darkreader-inline-border-bottom: currentcolor;" data-darkreader-inline-border-bottom="">
+Estimates
+</td>
+<td style="text-align: center; border-bottom: 1px solid; font-style: italic; font-weight: normal; --darkreader-inline-border-bottom: currentcolor;" data-darkreader-inline-border-bottom="">
+CI
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+(Intercept)
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+34.81 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+26.99&nbsp;–&nbsp;42.63
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Documentary [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+30.79 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+25.43&nbsp;–&nbsp;36.14
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Drama [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+10.24 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+7.23&nbsp;–&nbsp;13.26
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+runtime
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.18 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.11&nbsp;–&nbsp;0.25
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Musical…Performing.Arts<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+24.73 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+14.35&nbsp;–&nbsp;35.11
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+director.Woody.Allen [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+30.53 <sup>***</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+13.10&nbsp;–&nbsp;47.96
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.MGM [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-11.76 <sup>**</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-20.62&nbsp;–&nbsp;-2.90
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Richard.Gere [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-16.27 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+-28.82&nbsp;–&nbsp;-3.73
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Christian.Bale [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+18.21 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+2.26&nbsp;–&nbsp;34.17
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+studio.Universal.Pictures<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+8.95 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.52&nbsp;–&nbsp;16.39
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Art.House…International<br>[1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+10.81 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.29&nbsp;–&nbsp;20.33
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Minnie.Driver [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+16.90 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+1.32&nbsp;–&nbsp;32.49
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+Keanu.Reeves [yes]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+14.66 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.43&nbsp;–&nbsp;28.88
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">
+genre.Animation [1]
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+11.94 <sup>*</sup>
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center;  ">
+0.13&nbsp;–&nbsp;23.75
+</td>
+</tr>
+<tr>
+<td style="padding: 0.1cm 0.2cm; vertical-align: top; text-align: left; border-top: 1px solid; --darkreader-inline-border-top: currentcolor;" data-darkreader-inline-border-top="">
+Observations
+</td>
+<td style="padding: 0.1cm 0.2cm; vertical-align: top; text-align: left; border-top: 1px solid; --darkreader-inline-border-top: currentcolor;" colspan="2" data-darkreader-inline-border-top="">
+650
+</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; padding-top:0.1cm; padding-bottom:0.1cm;">
+R<sup>2</sup> / R<sup>2</sup> adjusted
+</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; padding-top:0.1cm; padding-bottom:0.1cm; text-align:left;" colspan="2">
+0.256 / 0.240
+</td>
+</tr>
+<tr>
+<td colspan="3" style="font-style: italic; border-top: double black; text-align: right; --darkreader-inline-border-top: #867b6b;" data-darkreader-inline-border-top="">
+<ul>
+<li>p&lt;0.05&nbsp;&nbsp;&nbsp;** p&lt;0.01&nbsp;&nbsp;&nbsp;*** p&lt;0.001
+</li></ul></td>
+</tr>
+</tbody></table>
+ 
+The final model contains considerably less variables, all being
+statistically significant. Note that this smaller model has comparable
+values for $\text{adjusted }R^2 = 0.240$ and $R^2 = 0.256$.
+
+## Interpretation
+
+Regression coefficients have to be interpreted as average change of the
+response when everthing else is held constant. With this in mind, we can
+see that there are several genres (Documentary, Drama, Animation, Art
+House, Musical) that have significantly higher scores. Longer films have
+higher scores on average (0.18 points per minute runtime). Also some
+actors have been identified to have a significant impact on the audience
+score - not always for the better. An example: verything else held
+constant, having Richard Gere in the cast leads to a decrease of -16.27
+on average.
+
+**CAVEAT** These are observational data, we cannot infere causality. So
+we do not know whether the appearance of Richard Gere causes the movie
+to be bad or whether there are other factors causing the bad rating.
+Simply put - it could just be bad luck of Richard Gere to get casted for
+inherently bad movies.
+
+------------------------------------------------------------------------
+
+# Prediction
+
+## Café Society
+
+### Sources
+
+-   [Rotten Tomates](https://www.rottentomatoes.com/m/cafe_society_2016)
+-   [IMDB](hhttps://www.imdb.com/title/tt4513674/)
+-   [Wikipedia](https://en.wikipedia.org/wiki/Caf%C3%A9_Society_%282016_film%29)
+
+### Base Data
+
+``` {.sourceCode .r}
+movie <- data.frame(actor1='Jeannie Berlin',
+                    actor2='Steve Carell',
+                    actor3='Jesse Eisenberg',
+                    actor4='Blake Lively',
+                    actor5='Parker Posey',
+                    director='Woody Allen',
+                    genre='Drama',
+                    runtime=96,
+                    studio='Amazon Studios',
+                    audience_score=56)
+```
+
+### Data Manipulation
+
+The variables of the movie whose `audience_score` we want to predict,
+have to match the variables that were used to build the model.
+Therefore, the same data preprocessing steps have to be applied.
+
+``` {.sourceCode .r}
+for (a in actors) {
+  movie[gsub(' ', '.', a)] = as.factor(apply(movie, 1, get_actor, actor = a))
+}
+
+movie$studio = as.factor(unlist(apply(movie, 1, get_studio)))
+movie$director = as.factor(unlist(apply(movie, 1, get_director)))
+
+movie = movie[append(gsub(' ', '.', actors), c('director',
+                                               'runtime',
+                                               'genre',
+                                               'studio',
+                                               'audience_score'))]
+
+dir_dummy <- data.frame(predict(dmy,
+                                newdata = data.frame(director = movie$director,
+                                                     studio = movie$studio,
+                                                     genre = movie$genre))) %>% 
+  lapply(as.factor) %>% 
+  as.data.frame()
+
+movie = data.frame(
+  append(
+    select(
+      movie, -c('director', 'studio', 'genre') #dropping the original columns
+      ), 
+    select(
+      dir_dummy, -c('director.other', 'studio.other', 'genre.Other') #drop the reference levels of studio, director and Genre
+      )
+    )
+)
+```
+
+### Final Prediction (and Prediction Interval)
+
+``` {.sourceCode .r}
+pred = predict(pm$model, movie, interval = 'prediction', level = 0.95)
+```
+
+The audience score on Rotten Tomatoes for *Café Society* is
+
+$$56$$
+
+while the final model predicts
+
+$$93$$
+
+with a prediction interval at the 95% confidence level of
+
+$$54 - 132$$
+
+**Interpretation of the prediction interval** We are 95% confident that
+this interval contains the specific response
+`audicence_score` corresponding to $x(Cafe\ Society)$.
+
+------------------------------------------------------------------------
+
+# Conclusion
+
+Predicting `audience_score` of a movie only from information that would
+be available before its release yields models with rather low predictive
+power ($R^2$ around 0.25, see above). If the cast or the director
+won an oscar is does not have a significant effect (not included in
+final model). That the prediction for *Café Society* is off by **37**
+points illustrates the weaknesses of the model and the fact that the
+predictors chosen in this work are not sufficient to predict audience
+popularity before a movie's release, which is also partly due to the
+choice of *p-values* as metric for model selection. The available data
+provide mainly technical information on the movies but leave out the
+most important parts - plot, mise-en-scène, music (composer of the film
+score could be easily incorporated in the dataset), just to give a few.
+In future work it might be interesting to look for ways to represent
+these in a form making these information accessible for modeling.
+Additionally, the current dataset should be enlarged in order to 1) have
+more data for already included actor, directors etc. and 2) to add even
+more these.
